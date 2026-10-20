@@ -55,7 +55,8 @@
 ## 构建与自检
 
 ```powershell
-cd "D:\新建文件夹 (6)\SnapAsk"
+git clone https://github.com/yrtnb666/SnapAsk.git
+cd SnapAsk
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 
 .\dist\SnapAsk.exe --selftest   # 9 项自检（键位解析 / 页面脚本 / 截图链路…）
