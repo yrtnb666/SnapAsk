@@ -3,6 +3,10 @@
 按住键框住屏幕上的题目 → 松手自动发给 **DeepSeek 网页版** → 答案边说边显示在软件里。
 选中一行文字按快捷键，也能直接把这行字发过去提问。
 
+> 本项目的 CDP 网页驱动方案复用自 [yrtnb666/EAgentX](https://github.com/yrtnb666/EAgentX)，
+> 而 EAgentX 本身基于 [YaoGaoChaoLe/EAgent](https://github.com/YaoGaoChaoLe/EAgent) 重写。
+> 派生链：**EAgent → EAgentX → SnapAsk**。详见文末「致谢与出处」。
+
 主界面左边嵌着 DeepSeek 网页（登录、对话都在这一栏里），右边是快捷键、答题记录和输入框。
 
 ![主界面](docs/ui-window.png)
@@ -63,7 +67,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 
 ## 实现要点
 
-- **网页驱动**沿用 EAgentX 的成熟方案：`EdgeLauncher` 用独立 profile 拉起 Edge/Chrome，
+- **网页驱动**沿用 [EAgentX](https://github.com/yrtnb666/EAgentX) 的成熟方案：`EdgeLauncher` 用独立 profile 拉起 Edge/Chrome，
   `CdpClient` 连上标签页后注入 `assets/page_helper.js`，由它写输入框、真实回车、判定「生成中 / 已完成」。
   所以不需要 API Key，登录状态跟着 profile 走。
 - **嵌入浏览器**：`SetParent` 把 Edge 窗口塞进左侧面板（去掉 WS_POPUP/CAPTION/THICKFRAME，加 WS_CHILD），
@@ -81,7 +85,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
   回答就抓不回来（小窗卡在「生成中」、内容不同步）。所以最小化时程序会自动把浏览器放回
   独立窗口保持页面活跃，主窗口还原后再自动嵌回来。
 
+## 致谢与出处
+
+- **[yrtnb666/EAgentX](https://github.com/yrtnb666/EAgentX)** —— 本项目的 CDP 网页驱动方案
+  （`EdgeLauncher` 拉起独立 profile 的浏览器、`CdpClient` 连接标签页、`assets/page_helper.js`
+  注入页面脚本）直接复用自 EAgentX。
+- **[YaoGaoChaoLe/EAgent](https://github.com/YaoGaoChaoLe/EAgent)** —— EAgentX 本身基于它重写，
+  最初的「CDP 操控 DeepSeek 网页」设计思路与工具协议均源自原作。致原作者 YaoGaoChaoLe。
+
+派生链：**EAgent（易语言，原作）→ EAgentX（C# 重写）→ SnapAsk（截题秒答）**。
+
 ## License
 
-本项目沿用 [EAgentX](https://github.com/YaoGaoChaoLe/EAgent) 的网页驱动方案，以 **GPL-3.0** 发布，
+本项目沿用 [EAgentX](https://github.com/yrtnb666/EAgentX) 的网页驱动方案，以 **GPL-3.0** 发布，
 仅供学习交流，不提供任何担保。完整条款见 [LICENSE](LICENSE)。
+
+同样适用原作的声明：CDP 自动化操控网页**违反了 [DeepSeek 用户协议](https://cdn.deepseek.com/policies/zh-CN/deepseek-terms-of-use.html)**，
+请自行评估账号风险。

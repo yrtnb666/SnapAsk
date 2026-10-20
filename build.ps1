@@ -8,11 +8,10 @@
     编译器查找顺序:
         1. -Csc 参数
         2. tools\.compiler\csc.exe（本目录缓存）
-        3. 同级的 EAgentX-新UI版\tools\.compiler\csc.exe（复用已有的 Roslyn 缓存）
-        4. Visual Studio / MSBuild 自带的 Roslyn csc.exe
-        5. .NET SDK 里的 Roslyn（通过 dotnet exec 调用）
-        6. Windows 自带的 %WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe（C# 5）
-        7. 从 nuget.org 下载 Microsoft.Net.Compilers.Toolset 并缓存到 tools\.compiler
+        3. Visual Studio / MSBuild 自带的 Roslyn csc.exe
+        4. .NET SDK 里的 Roslyn（通过 dotnet exec 调用）
+        5. Windows 自带的 %WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe（C# 5）
+        6. 从 nuget.org 下载 Microsoft.Net.Compilers.Toolset 并缓存到 tools\.compiler
 
     说明: 源码保持 C# 5 语法，Windows 自带 csc.exe 也能编译，不联网、不装 SDK 即可构建。
 #>
@@ -107,20 +106,12 @@ function Find-SdkCsc {
 $cscExe = $null
 $cscPrefix = @()
 
-# 同级项目里已缓存的 Roslyn（避免重复下载）
-$sibling = Get-ChildItem -Path (Split-Path $root -Parent) -Directory -ErrorAction SilentlyContinue |
-           ForEach-Object { Join-Path $_.FullName "tools\.compiler\csc.exe" } |
-           Where-Object { Test-Path $_ } | Select-Object -First 1
-
 if ($Csc) {
     if (-not (Test-Path $Csc)) { throw "指定的编译器不存在: $Csc" }
     $cscExe = $Csc
 }
 elseif (Test-Path (Join-Path $toolDir "csc.exe")) {
     $cscExe = Join-Path $toolDir "csc.exe"
-}
-elseif ($sibling) {
-    $cscExe = $sibling
 }
 else {
     $cscExe = Find-VsCsc
