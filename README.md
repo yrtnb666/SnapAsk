@@ -34,7 +34,8 @@
 - **左侧浏览器**：DeepSeek 网页本体，和独立浏览器完全一样。中间的分隔条可以拖宽拖窄；点「恢复窗口」可以把它放回独立窗口。
 - **两张快捷键卡片**：点键位胶囊或「改键」可以重新录键；「试一下」立即触发一次，方便确认手感。
 - **答题记录**：每一次提问的题目和答案都留在这里，同时写入 `%APPDATA%\SnapAsk\history\日期.log`。
-- **答案卡片**：独立浮窗，支持追问（会接着上一轮对话问）。
+- **答案卡片**：独立浮窗，答案多时自动长高、答案少时缩回（带平滑动画），支持追问（会接着上一轮对话问）。
+  网页返回的数学公式会转成 `√3`、`≤`、`∈`、`11/6`、`x²` 这类普通可读字符，不再直接显示 `$...$` 和 `\frac`。
 
 ## 设置
 
@@ -59,7 +60,7 @@ git clone https://github.com/yrtnb666/SnapAsk.git
 cd SnapAsk
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 
-.\dist\SnapAsk.exe --selftest   # 9 项自检（键位解析 / 页面脚本 / 截图链路…）
+.\dist\SnapAsk.exe --selftest   # 10 项自检（键位解析 / 页面脚本 / 公式转换 / 截图链路…）
 .\dist\SnapAsk.exe --probe      # 连接体检：浏览器 + CDP + 脚本注入 + 页面状态
 .\dist\SnapAsk.exe --uidemo     # 界面自查（示例答案卡 + 嵌入浏览器）
 ```

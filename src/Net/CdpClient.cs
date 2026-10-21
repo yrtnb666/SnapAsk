@@ -89,6 +89,16 @@ namespace SnapAsk.Net
 					LastError = ex.Message;
 				}
 			}
+			finally
+			{
+				// 连接断了（浏览器关闭、页面崩溃、网络中断）时，把还在等的 CDP 请求
+				// 立刻标记为失败，而不是让它们各自干等到超时。
+				if (!ct.IsCancellationRequested && !Disposed)
+				{
+					string reason = string.IsNullOrEmpty(LastError) ? "连接已关闭" : LastError;
+					FailPending(new Exception("CDP 连接已断开：" + reason));
+				}
+			}
 		}
 
 		private void Dispatch(string json)
@@ -151,7 +161,11 @@ namespace SnapAsk.Net
 				message["params"] = parameters;
 			}
 			byte[] payload = Encoding.UTF8.GetBytes(Json.Encode(message));
-			await SendGate.WaitAsync();
+			if (!await SendGate.WaitAsync(10000))
+			{
+				RemovePending(id);
+				throw new TimeoutException("CDP 发送队列等待超时: " + method);
+			}
 			try
 			{
 				// WebSocket 不允许并发发送，所以串行化

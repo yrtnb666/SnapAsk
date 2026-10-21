@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using SnapAsk.Net;
 
@@ -9,15 +10,17 @@ namespace SnapAsk.Core
 	/// <summary>
 	/// 取「当前选中文字」：向当前前台窗口发一次 Ctrl+C，然后把剪贴板里的文字读回来。
 	/// 剪贴板 API 要求 STA 线程，所以整段逻辑放在独立的 STA 线程里跑，
-	/// 主界面不会因为等待剪贴板而卡住。
+	/// 调用方 await 结果，主界面不会因为等待剪贴板而卡住。
 	/// </summary>
 	public static class ClipboardGrab
 	{
-		public static string GrabSelectedText(int waitMs)
+		/// <summary>异步取词：等待期间不占用 UI 线程（最多约 waitMs 毫秒）。</summary>
+		public static Task<string> GrabSelectedTextAsync(int waitMs)
 		{
-			string result = null;
+			TaskCompletionSource<string> completion = new TaskCompletionSource<string>();
 			Thread worker = new Thread(delegate()
 			{
+				string result = null;
 				try
 				{
 					result = GrabCore(waitMs);
@@ -26,12 +29,12 @@ namespace SnapAsk.Core
 				{
 					result = null;
 				}
+				completion.TrySetResult(result);
 			});
 			worker.IsBackground = true;
 			worker.SetApartmentState(ApartmentState.STA);
 			worker.Start();
-			worker.Join(waitMs + 1500);
-			return result;
+			return completion.Task;
 		}
 
 		private static string GrabCore(int waitMs)

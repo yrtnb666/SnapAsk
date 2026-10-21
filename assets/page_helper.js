@@ -18,9 +18,9 @@
 
     var CFG = __CFG__;
     var old = window.__snapask;
-    if (old && old.v === 1) { old.cfg = CFG; return 'ok'; }
+    if (old && old.v === 2) { old.cfg = CFG; return 'ok'; }
 
-    var E = { v: 1, cfg: CFG };
+    var E = { v: 2, cfg: CFG };
 
     E.all = function (sel) {
       try { return Array.prototype.slice.call(document.querySelectorAll(sel)); } catch (e) { return []; }
@@ -48,16 +48,19 @@
       return E.all('.ds-message').length;
     };
 
-    E.userSent = function (text) {
+    E.userSentIn = function (ms, text) {
       var needle = E.norm(text);
-      if (!needle) return false;
-      var ms = E.all('.ds-message');
+      if (!needle || !ms) return false;
       for (var i = ms.length - 1; i >= 0 && i >= ms.length - 4; i--) {
         if (ms[i].querySelector('.ds-markdown')) continue;
         var t = E.norm(ms[i].innerText || '');
         if (t === needle || (t.length > 40 && needle.indexOf(t) === 0)) return true;
       }
       return false;
+    };
+
+    E.userSent = function (text) {
+      return E.userSentIn(E.all('.ds-message'), text);
     };
 
     E.input = function () {
@@ -118,18 +121,104 @@
       return keep;
     };
 
-    // 把 markdown 渲染结果压成纯文本；代码块还原成 ``` 围栏，便于复制。
-    E.serialize = function (el) {
-      var clone = el.cloneNode(true);
-      var pres = clone.querySelectorAll('pre');
-      for (var i = 0; i < pres.length; i++) {
-        var pre = pres[i];
-        var code = pre.querySelector('code');
-        var content = code ? (code.innerText || code.textContent || '') : (pre.innerText || '');
-        var block = '\n```\n' + content.replace(/\s+$/, '') + '\n```\n';
-        pre.parentNode.replaceChild(document.createTextNode(block), pre);
+    // KaTeX 的 HTML 是给视觉排版用的：直接取 innerText 会把每个符号拆成一行，
+    // 还会混进隐藏的 MathML。这里改成取 <annotation> 里的 TeX 原文，
+    // 再按段落地把 DOM 压成纯文本。
+    E.texOf = function (node) {
+      try {
+        var ann = node.querySelector('annotation');
+        if (ann && ann.textContent) return ann.textContent.replace(/^\s+|\s+$/g, '');
+        var alt = node.getAttribute && node.getAttribute('alttext');
+        if (alt) return alt;
+      } catch (e) { }
+      return '';
+    };
+
+    E.isDisplayMath = function (node) {
+      var p = node.parentNode;
+      while (p && p.nodeType === 1) {
+        var pc = (typeof p.className === 'string') ? p.className : '';
+        if (pc.indexOf('katex-display') >= 0) return true;
+        if (p !== node && pc.indexOf('katex') >= 0) return false;
+        p = p.parentNode;
       }
-      return (clone.innerText || clone.textContent || '').trim();
+      return false;
+    };
+
+    E.walk = function (node, out) {
+      if (!node) return;
+      if (node.nodeType === 3) {
+        out.push(node.nodeValue || '');
+        return;
+      }
+      if (node.nodeType !== 1) return;
+
+      var tag = (node.tagName || '').toLowerCase();
+      if (/^(script|style|noscript|template|svg)$/.test(tag)) return;
+
+      var cls = (typeof node.className === 'string') ? node.className : '';
+      if (cls.indexOf('katex-mathml') >= 0 || cls.indexOf('katex-html') >= 0) return;
+      if (cls.indexOf('katex') >= 0) {
+        var tex = E.texOf(node);
+        if (tex) {
+          out.push(E.isDisplayMath(node) ? ('\n$$\n' + tex + '\n$$\n') : ('$' + tex + '$'));
+          return;
+        }
+      }
+      if (tag === 'math') {
+        var mathTex = E.texOf(node);
+        if (mathTex) out.push('$' + mathTex + '$');
+        return;
+      }
+      if (tag === 'br') {
+        out.push('\n');
+        return;
+      }
+      if (tag === 'pre') {
+        var codeEl = node.querySelector('code');
+        var content = codeEl ? (codeEl.textContent || '') : (node.textContent || '');
+        var lang = '';
+        if (codeEl) {
+          var m = /(?:^|\s)language-([\w+#.-]+)/.exec(codeEl.className || '');
+          if (m) lang = m[1];
+        }
+        out.push('\n```' + lang + '\n' + content.replace(/\s+$/, '') + '\n```\n');
+        return;
+      }
+      if (tag === 'code') {
+        out.push('`' + (node.textContent || '') + '`');
+        return;
+      }
+      if (tag === 'img') {
+        var alt = node.getAttribute('alt');
+        if (alt) out.push(alt);
+        return;
+      }
+      if (tag === 'hr') {
+        out.push('\n---\n');
+        return;
+      }
+
+      var block = /^(p|div|section|article|ul|ol|li|blockquote|h[1-6]|table|thead|tbody|tr)$/.test(tag);
+      if (tag === 'li') out.push('\n- ');
+      else if (block) out.push('\n');
+      for (var child = node.firstChild; child; child = child.nextSibling) {
+        E.walk(child, out);
+      }
+      if (block || tag === 'li') out.push('\n');
+    };
+
+    // 把 markdown 渲染结果压成纯文本；数学公式保留 TeX 原文，代码块还原成 ``` 围栏。
+    E.serialize = function (el) {
+      if (!el) return '';
+      var out = [];
+      E.walk(el, out);
+      var text = out.join('')
+        .replace(/\r\n?/g, '\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n-\s*\n+/g, '\n- ')
+        .replace(/\n{3,}/g, '\n\n');
+      return text.replace(/^\s+|\s+$/g, '');
     };
 
     E.generating = function () {
@@ -157,9 +246,12 @@
       return false;
     };
 
-    // 一次返回：回复文本、是否已出现助手消息、动作栏按钮数、是否仍在生成。
+    // 一次返回：回复文本、是否已出现助手消息、动作栏按钮数、是否仍在生成、是否被限流。
+    // 合并成一个返回值后，等待回答时每轮只需一次 CDP 往返。
     E.replyState = function () {
       var ms = E.all('.ds-message');
+      var generating = E.generating();
+      var limited = E.rateLimited(ms);
       for (var i = ms.length - 1; i >= 0; i--) {
         if (!E.vis(ms[i])) continue;
         var md = ms[i].querySelector('.ds-markdown');
@@ -173,13 +265,13 @@
               actions += sib.querySelectorAll('button,div[role="button"]').length;
             }
           }
-          return { has: true, text: E.serialize(md), actions: actions, messages: ms.length, generating: E.generating() };
+          return { has: true, text: E.serialize(md), actions: actions, messages: ms.length, generating: generating, limited: limited };
         }
         if (E.norm(ms[i].innerText || '').length > 0) {
-          return { has: false, text: '', actions: 0, messages: ms.length, generating: E.generating() };
+          return { has: false, text: '', actions: 0, messages: ms.length, generating: generating, limited: limited };
         }
       }
-      return { has: false, text: '', actions: 0, messages: ms.length, generating: E.generating() };
+      return { has: false, text: '', actions: 0, messages: ms.length, generating: generating, limited: limited };
     };
 
     // 图片附件状态：出现 blob 缩略图或文件卡片说明已进输入区；「上传中」表示还没传完。
@@ -191,14 +283,28 @@
       return { count: imgs.length + cards.length, uploading: uploading };
     };
 
-    E.rateLimit = function () {
-      var ms = E.all('.ds-message');
-      if (!ms.length) return false;
+    E.rateLimited = function (ms) {
+      if (!ms || !ms.length) return false;
       var last = ms[ms.length - 1];
       var t = (last.parentElement ? last.parentElement.innerText : last.innerText) || '';
       return t.indexOf('消息发送过于频繁') >= 0 ||
              t.indexOf('请求过于频繁') >= 0 ||
              t.indexOf('发送太频繁') >= 0;
+    };
+
+    E.rateLimit = function () {
+      return E.rateLimited(E.all('.ds-message'));
+    };
+
+    // 等待提交时一次拿齐所有判断条件，替代原来每 400ms 连发 4 条 CDP 命令。
+    E.submitState = function (text) {
+      var ms = E.all('.ds-message');
+      return {
+        messages: ms.length,
+        generating: E.generating(),
+        limited: E.rateLimited(ms),
+        sent: E.userSentIn(ms, text)
+      };
     };
 
     E.beforeSend = function () {

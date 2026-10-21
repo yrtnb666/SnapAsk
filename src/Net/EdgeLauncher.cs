@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32;
@@ -19,6 +21,8 @@ namespace SnapAsk.Net
 		private readonly Settings S;
 
 		private readonly HttpClient Http;
+
+		private readonly int Port;
 
 		private readonly string Base;
 
@@ -38,17 +42,127 @@ namespace SnapAsk.Net
 		public EdgeLauncher(Settings settings)
 		{
 			S = settings;
-			Base = "http://127.0.0.1:" + S.CdpPort;
+			Port = PickPort(S.CdpPort);
+			if (Port != S.CdpPort)
+			{
+				Log.Dim("调试端口 " + S.CdpPort + " 被系统保留或占用，改用 " + Port + "。");
+				S.CdpPort = Port;
+			}
+			Base = "http://127.0.0.1:" + Port;
 			Http = new HttpClient();
 			Http.Timeout = TimeSpan.FromSeconds(3.0);
+		}
+
+		/// <summary>
+		/// Hyper-V / WinNAT 会随机保留一段 TCP 端口；落在保留区里的端口浏览器根本 bind 不上，
+		/// 表现就是“浏览器启动了，但调试端口一直没就绪”。这里先探测，必要时换一个能用的端口。
+		/// </summary>
+		private static int PickPort(int preferred)
+		{
+			if (CanUsePort(preferred))
+			{
+				return preferred;
+			}
+			const int ConventionalPort = 9222;
+			if (preferred != ConventionalPort && CanUsePort(ConventionalPort))
+			{
+				return ConventionalPort;
+			}
+			return FindFreePort();
+		}
+
+		/// <summary>已有 CDP 服务在监听，或本机还能 bind 这个端口。</summary>
+		private static bool CanUsePort(int port)
+		{
+			if (port < 1 || port > 65535)
+			{
+				return false;
+			}
+			if (CdpAlive(port))
+			{
+				return true;
+			}
+			TcpListener listener = null;
+			try
+			{
+				listener = new TcpListener(IPAddress.Loopback, port);
+				listener.Start();
+				return true;
+			}
+			catch
+			{
+				return false;
+			}
+			finally
+			{
+				if (listener != null)
+				{
+					try
+					{
+						listener.Stop();
+					}
+					catch
+					{
+					}
+				}
+			}
+		}
+
+		private static bool CdpAlive(int port)
+		{
+			try
+			{
+				using (HttpClient client = new HttpClient())
+				{
+					client.Timeout = TimeSpan.FromMilliseconds(800);
+					string text = client.GetStringAsync("http://127.0.0.1:" + port + "/json/version")
+						.GetAwaiter().GetResult();
+					return !string.IsNullOrEmpty(text);
+				}
+			}
+			catch
+			{
+				return false;
+			}
+		}
+
+		private static int FindFreePort()
+		{
+			TcpListener listener = null;
+			try
+			{
+				listener = new TcpListener(IPAddress.Loopback, 0);
+				listener.Start();
+				return ((IPEndPoint)listener.LocalEndpoint).Port;
+			}
+			finally
+			{
+				if (listener != null)
+				{
+					try
+					{
+						listener.Stop();
+					}
+					catch
+					{
+					}
+				}
+			}
 		}
 
 		public bool IsDebuggerReady()
 		{
 			try
 			{
-				string version = Http.GetStringAsync(Base + "/json/version").Result;
-				return !string.IsNullOrEmpty(version);
+				using (HttpResponseMessage resp = Http.SendAsync(new HttpRequestMessage(HttpMethod.Get, Base + "/json/version"), HttpCompletionOption.ResponseContentRead).GetAwaiter().GetResult())
+				{
+					if (!resp.IsSuccessStatusCode)
+					{
+						return false;
+					}
+					string version = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+					return !string.IsNullOrEmpty(version);
+				}
 			}
 			catch
 			{
@@ -119,7 +233,7 @@ namespace SnapAsk.Net
 		{
 			if (IsDebuggerReady())
 			{
-				Log.Dim("调试端口 " + S.CdpPort + " 已在监听，复用现有浏览器。");
+				Log.Dim("调试端口 " + Port + " 已在监听，复用现有浏览器。");
 				return;
 			}
 			BrowserPath = ResolveBrowser();
@@ -136,7 +250,7 @@ namespace SnapAsk.Net
 				target = "--app=\"" + S.StartUrl + "\"";
 			}
 			string arguments = stealth
-				+ "--remote-debugging-port=" + S.CdpPort
+				+ "--remote-debugging-port=" + Port
 				+ " --remote-allow-origins=* --user-data-dir=\"" + Settings.ProfileDir + "\""
 				+ " --no-first-run --no-default-browser-check --disable-sync"
 				+ " --disable-features=msEdgeFirstRunExperience,msEdgeSidebarV2 " + target;
@@ -155,9 +269,9 @@ namespace SnapAsk.Net
 				{
 					return;
 				}
-				Thread.Sleep(400);
+				Thread.Sleep(watch.ElapsedMilliseconds < 3000 ? 120 : 400);
 			}
-			throw new TimeoutException("浏览器已启动，但调试端口 " + S.CdpPort + " 未就绪。请检查是否被安全软件拦截。");
+			throw new TimeoutException("浏览器已启动，但调试端口 " + Port + " 未就绪。请检查是否被安全软件拦截。");
 		}
 
 		/// <summary>等一个可用的聊天页面；10 秒还没找到就主动新建标签页。</summary>

@@ -81,6 +81,20 @@ namespace SnapAsk
 				Assert(script.IndexOf("__CFG__", StringComparison.Ordinal) < 0, "__CFG__ 没有被替换");
 				Assert(script.IndexOf("window.__snapask", StringComparison.Ordinal) > 0, "缺少 __snapask 挂载");
 				Assert(script.IndexOf("\"input\"", StringComparison.Ordinal) > 0, "选择器 JSON 没写进去");
+				Assert(script.IndexOf("E.submitState", StringComparison.Ordinal) > 0, "缺少合并后的提交状态查询");
+				Assert(script.IndexOf("limited:", StringComparison.Ordinal) > 0, "replyState 未返回限流状态");
+			});
+
+			Check("公式转可读文本", delegate
+			{
+				string source = "答案：$a = \\sqrt{2}$，$\\{1, \\sqrt{3}, 2+\\sqrt{3}\\}$，"
+					+ "$a \\in [1,3]$，$a \\le 3$，$x^2$，$\\frac{11}{6}$，$\\pm\\sqrt{2}$";
+				string expected = "答案：a = √2，{1, √3, 2+√3}，a ∈ [1,3]，a ≤ 3，x²，11/6，±√2";
+				string actual = ReadableMath.Convert(source);
+				Assert(actual == expected, "实际: " + actual);
+				Assert(ReadableMath.Convert("$$\\frac{3}{2}$$") == "3/2", "独立公式转换失败");
+				Assert(ReadableMath.Convert("题目：\\(f(x)=x^2\\)") == "题目：f(x)=x²", "\\(...\\) 公式转换失败");
+				Assert(ReadableMath.Convert("$90^\\circ$，$x^{-1}$") == "90°，x⁻¹", "角度/负指数转换失败");
 			});
 
 			Check("配置归一化", delegate
@@ -91,7 +105,7 @@ namespace SnapAsk
 				settings.TextPrompt = "没有占位符";
 				settings.ShotHoldKey = "";
 				settings.Normalize();
-				Assert(settings.CdpPort == 9666, "端口应回落到 9666");
+				Assert(settings.CdpPort == 9222, "端口应回落到 9222");
 				Assert(settings.ReplyTimeoutSec == 30, "超时应回落到 30");
 				Assert(settings.TextPrompt.IndexOf("{text}", StringComparison.Ordinal) >= 0, "模板应补回 {text}");
 				Assert(settings.ShotHoldKey == "Alt", "截图键应回落到 Alt");

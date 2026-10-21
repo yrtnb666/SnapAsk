@@ -109,7 +109,7 @@ namespace SnapAsk.Util
 			ApiModel = "deepseek-chat";
 			ImagePrompt = "请解答图片中的题目。先给出最终答案，再给出简要步骤和解析。";
 			TextPrompt = "请解答下面的题目。先给出最终答案，再给出简要步骤和解析：\r\n\r\n{text}";
-			CdpPort = 9666;
+			CdpPort = 9222;
 			EdgePath = "";
 			StartUrl = "https://chat.deepseek.com/";
 			ReplyTimeoutSec = 300;
@@ -211,7 +211,7 @@ namespace SnapAsk.Util
 			}
 			if (CdpPort < 1 || CdpPort > 65535)
 			{
-				CdpPort = 9666;
+				CdpPort = 9222;
 			}
 			if (BrowserWidth < 280)
 			{

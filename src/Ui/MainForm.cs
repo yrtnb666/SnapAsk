@@ -86,6 +86,8 @@ namespace SnapAsk.Ui
 
 		private bool HasCaptured;
 
+		private bool GrabbingText;
+
 		private bool DetachedByMinimize;
 
 		private bool Quitting;
@@ -124,7 +126,8 @@ namespace SnapAsk.Ui
 			ApplySettingsToUi();
 			InstallHook();
 			BuildTray();
-			ScreenCapture.Prune(60);
+			// 清理旧截图会遍历磁盘，放到后台线程，别拖慢启动
+			Task.Run(delegate { ScreenCapture.Prune(60); });
 			Log.Info("SnapAsk 启动：截图键 " + S.ShotHoldKey + " · 划词键 " + S.TextHotkey
 				+ " · 嵌入浏览器 " + (S.EmbedBrowser ? "开" : "关"));
 		}
@@ -994,19 +997,36 @@ namespace SnapAsk.Ui
 
 		// ================================================================ 划词 / 输入
 
-		private void GrabTextAndAsk()
+		private async void GrabTextAndAsk()
 		{
-			string selected = ClipboardGrab.GrabSelectedText(420);
-			if (string.IsNullOrEmpty(selected) || selected.Trim().Length == 0)
+			// 取词要等剪贴板，放到后台线程；期间连按快捷键只算一次，避免重复提问
+			if (GrabbingText)
 			{
-				Notify("没有取到文字", "请先用鼠标选中要提问的文字，再按 " + S.TextHotkey + "。");
 				return;
 			}
-			Question question = new Question();
-			question.Source = selected.Trim();
-			question.Text = S.TextPrompt.Replace("{text}", question.Source);
-			question.Region = Rectangle.Empty;
-			Enqueue(question);
+			GrabbingText = true;
+			try
+			{
+				string selected = await ClipboardGrab.GrabSelectedTextAsync(420);
+				if (string.IsNullOrEmpty(selected) || selected.Trim().Length == 0)
+				{
+					Notify("没有取到文字", "请先用鼠标选中要提问的文字，再按 " + S.TextHotkey + "。");
+					return;
+				}
+				Question question = new Question();
+				question.Source = selected.Trim();
+				question.Text = S.TextPrompt.Replace("{text}", question.Source);
+				question.Region = Rectangle.Empty;
+				Enqueue(question);
+			}
+			catch (Exception ex)
+			{
+				Log.Error(ex);
+			}
+			finally
+			{
+				GrabbingText = false;
+			}
 		}
 
 		private void SendTyped()
@@ -1032,7 +1052,7 @@ namespace SnapAsk.Ui
 			{
 				Pending.Enqueue(question);
 			}
-			AppendTranscript("你", question.Caption, Theme.User);
+			AppendTranscript("你", ReadableMath.Convert(question.Caption), Theme.User);
 			if (!Running)
 			{
 				Running = true;
@@ -1079,8 +1099,8 @@ namespace SnapAsk.Ui
 				Answer.FollowUp += delegate(string text) { FollowUp(text); };
 				Answer.SetDefaultPin(S.AnswerOnTop);
 			}
-			Answer.BeginQuestion(question);
-			Answer.SetQuestionCaption(question.Caption);
+			Answer.BeginQuestion(question, S.AutoShowAnswer);
+			Answer.SetQuestionCaption(ReadableMath.Convert(question.Caption));
 			if (question.Region.IsEmpty)
 			{
 				Answer.PlaceNearCursor();
@@ -1088,10 +1108,6 @@ namespace SnapAsk.Ui
 			else
 			{
 				Answer.PlaceNear(question.Region);
-			}
-			if (!S.AutoShowAnswer)
-			{
-				Answer.Hide();
 			}
 
 			try
@@ -1116,12 +1132,14 @@ namespace SnapAsk.Ui
 				string answer = await Engine.AskAsync(question.Text, question.ImagePath,
 					delegate(string partial)
 					{
-						Answer.UpdateAnswer(partial);
+						// 网页返回的是 TeX；答案卡片是纯文本控件，先转成 √、≤、∈ 这类可读字符。
+						Answer.UpdateAnswer(ReadableMath.Convert(partial));
 						if (S.AutoShowAnswer)
 						{
 							Answer.EnsureVisible();
 						}
 					}, Cts.Token);
+				answer = ReadableMath.Convert(answer);
 				Answer.UpdateAnswer(answer);
 				Answer.Finish();
 				SetStatus("已完成", Theme.Success);

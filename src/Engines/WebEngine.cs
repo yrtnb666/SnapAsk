@@ -189,7 +189,9 @@ namespace SnapAsk.Engines
 		{
 			try
 			{
-				object has = await Cdp.EvaluateAsync("!!(window.__snapask && window.__snapask.replyState)", 8000);
+				// 版本号必须一起校验：页面上可能还留着旧版辅助脚本，只判断 replyState
+				// 会让新序列化逻辑永远注入不进去（旧脚本会一直复用）。
+				object has = await Cdp.EvaluateAsync("!!(window.__snapask && window.__snapask.v === 2 && window.__snapask.replyState)", 8000).ConfigureAwait(false);
 				if (has is bool && (bool)has)
 				{
 					return true;
@@ -201,7 +203,7 @@ namespace SnapAsk.Engines
 			Log.Dim("页面辅助脚本丢失（页面可能被刷新过），正在重新注入…");
 			try
 			{
-				await InjectAsync(CancellationToken.None);
+				await InjectAsync(CancellationToken.None).ConfigureAwait(false);
 				return true;
 			}
 			catch (Exception ex)
@@ -467,20 +469,29 @@ namespace SnapAsk.Engines
 			while (watch.ElapsedMilliseconds < timeoutMs)
 			{
 				ct.ThrowIfCancellationRequested();
-				await Task.Delay(700, ct);
+				// 后台轮询不要回 UI 线程：嵌入浏览器/重排窗口时 UI 线程偶尔会忙，
+				// 若这里捕获 UI 上下文，700ms 的等待会被拖成几秒甚至几十秒。
+				await Task.Delay(700, ct).ConfigureAwait(false);
 				// 页面被刷新过的话辅助脚本会丢，补一针再继续（否则整轮问答直接抓瞎）
 				if (ticks % 8 == 0)
 				{
-					await EnsureHelperAsync();
+					await EnsureHelperAsync().ConfigureAwait(false);
 				}
-				Dictionary<string, object> replyState = Json.Obj(await Cdp.EvaluateAsync("window.__snapask.replyState()", 10000));
+				Dictionary<string, object> replyState = Json.Obj(
+					await Cdp.EvaluateAsync("window.__snapask.replyState()", 10000).ConfigureAwait(false));
 				bool hasReply = replyState != null && Json.GetBool(replyState, "has", false);
 				string current = ((replyState == null) ? "" : (Json.GetStr(replyState, "text") ?? ""));
 				int actions = ((replyState != null) ? Json.GetInt(replyState, "actions", 0) : 0);
 				int count = ((replyState != null) ? Json.GetInt(replyState, "messages", 0) : 0);
 				bool generating = replyState == null || Json.GetBool(replyState, "generating", true);
-				object rateLimitedValue = await Cdp.EvaluateAsync("window.__snapask.rateLimit()", 8000);
-				if (rateLimitedValue is bool && (bool)rateLimitedValue)
+				// replyState() 已经把「是否限流」一起返回，正常情况不用再多跑一条 CDP 命令
+				bool limited = replyState != null && Json.GetBool(replyState, "limited", false);
+				if (replyState == null)
+				{
+					object rateLimitedValue = await Cdp.EvaluateAsync("window.__snapask.rateLimit()", 8000).ConfigureAwait(false);
+					limited = rateLimitedValue is bool && (bool)rateLimitedValue;
+				}
+				if (limited)
 				{
 					throw RateLimitedException();
 				}
@@ -538,14 +549,15 @@ namespace SnapAsk.Engines
 					string where = "";
 					if (count == 0)
 					{
-						where = " · 页面 " + (await GetHrefAsync());
+						where = " · 页面 " + (await GetHrefAsync().ConfigureAwait(false));
 					}
 					Log.Dim("等待回答: 消息 " + count + " · 生成中 " + (generating ? "是" : "否")
 						+ " · 已抓取 " + ((last == null) ? 0 : last.Length) + " 字" + where);
 				}
 				if (watch.ElapsedMilliseconds > 30000 && last == null)
 				{
-					Dictionary<string, object> diag = Json.Obj(await Cdp.EvaluateAsync("window.__snapask.diag()", 8000));
+					Dictionary<string, object> diag = Json.Obj(
+						await Cdp.EvaluateAsync("window.__snapask.diag()", 8000).ConfigureAwait(false));
 					string sample = ((diag == null) ? "" : (Json.GetStr(diag, "sample") ?? ""));
 					if (sample.IndexOf("服务器繁忙", StringComparison.Ordinal) >= 0
 						|| sample.IndexOf("请稍后再试", StringComparison.Ordinal) >= 0)
@@ -557,7 +569,7 @@ namespace SnapAsk.Engines
 			string extra = "";
 			try
 			{
-				extra = await ReadDiagnosticsAsync();
+				extra = await ReadDiagnosticsAsync().ConfigureAwait(false);
 			}
 			catch
 			{
@@ -581,57 +593,41 @@ namespace SnapAsk.Engines
 
 		private async Task<bool> WaitForSubmittedAsync(string text, int beforeMsgs, int timeoutMs, CancellationToken ct)
 		{
+			// 题目文本可能很长，序列化一次就够了
+			string submitCall = "window.__snapask.submitState(" + Json.Encode(text) + ")";
 			Stopwatch watch = Stopwatch.StartNew();
 			while (watch.ElapsedMilliseconds < timeoutMs)
 			{
 				ct.ThrowIfCancellationRequested();
 				await Task.Delay(400, ct);
+				// 一次调用拿齐消息数 / 生成中 / 限流 / 已出现用户消息，减少 CDP 往返
+				Dictionary<string, object> state = null;
 				try
 				{
-					object countObj = await Cdp.EvaluateAsync("window.__snapask.msgCount()", 8000);
-					int now = ((countObj != null) ? Convert.ToInt32(countObj) : 0);
+					state = Json.Obj(await Cdp.EvaluateAsync(submitCall, 8000));
+				}
+				catch
+				{
+				}
+				if (state != null)
+				{
+					int now = Json.GetInt(state, "messages", 0);
 					if (now > beforeMsgs)
 					{
 						return true;
 					}
-				}
-				catch
-				{
-				}
-				bool limited = false;
-				try
-				{
-					object limitedObj = await Cdp.EvaluateAsync("window.__snapask.rateLimit()", 8000);
-					limited = limitedObj is bool && (bool)limitedObj;
-				}
-				catch
-				{
-				}
-				if (limited)
-				{
-					throw RateLimitedException();
-				}
-				try
-				{
-					object generatingObj = await Cdp.EvaluateAsync("window.__snapask.generating()", 8000);
-					if (generatingObj is bool && (bool)generatingObj)
+					if (Json.GetBool(state, "limited", false))
+					{
+						throw RateLimitedException();
+					}
+					if (Json.GetBool(state, "generating", false))
 					{
 						return true;
 					}
-				}
-				catch
-				{
-				}
-				try
-				{
-					object sentObj = await Cdp.EvaluateAsync("window.__snapask.userSent(" + Json.Encode(text) + ")", 8000);
-					if (sentObj is bool && (bool)sentObj)
+					if (Json.GetBool(state, "sent", false))
 					{
 						return true;
 					}
-				}
-				catch
-				{
 				}
 			}
 			return false;

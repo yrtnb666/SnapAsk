@@ -12,7 +12,21 @@ namespace SnapAsk.Ui
 	/// </summary>
 	public sealed class AnswerForm : Form
 	{
+		private const int MinAutoHeight = 240;
+
+		private const int AutoHeightScreenGap = 32;
+
 		private readonly RichTextBox Body;
+
+		private readonly Timer ResizeTimer;
+
+		private int TargetHeight;
+
+		private int TargetTop;
+
+		private int PreferredTop;
+
+		private bool HasPreferredTop;
 
 		private readonly StatusPill Status;
 
@@ -33,6 +47,9 @@ namespace SnapAsk.Ui
 		private readonly Label CaptionLabel;
 
 		private string RawText = "";
+
+		/// <summary>已经画进正文的文本，用来判断能不能只追加新增片段。</summary>
+		private string RenderedText = "";
 
 		private bool Dragging;
 
@@ -57,6 +74,11 @@ namespace SnapAsk.Ui
 			DoubleBuffered = true;
 			KeyPreview = true;
 			SetStyle(ControlStyles.ResizeRedraw, true);
+
+			// 答案变多/变少时按内容高度平滑缩放窗口
+			ResizeTimer = new Timer();
+			ResizeTimer.Interval = 16;
+			ResizeTimer.Tick += delegate { OnResizeTick(); };
 
 			Panel header = new Panel();
 			header.Dock = DockStyle.Top;
@@ -236,6 +258,8 @@ namespace SnapAsk.Ui
 			{
 				return;
 			}
+			// 拖动时先停下自动缩放，否则窗口会一边被拖一边自己移动
+			ResizeTimer.Stop();
 			Dragging = true;
 			DragOrigin = new Point(e.X, e.Y);
 			Point screen = ((Control)sender).PointToScreen(DragOrigin);
@@ -256,6 +280,10 @@ namespace SnapAsk.Ui
 		private void HeaderMouseUp(object sender, MouseEventArgs e)
 		{
 			Dragging = false;
+			// 记住用户拖到的新位置，之后自动缩放以这里为锚点
+			PreferredTop = Top;
+			HasPreferredTop = true;
+			UpdateAutoHeight();
 		}
 
 		private void SendFollowUp()
@@ -281,6 +309,179 @@ namespace SnapAsk.Ui
 				UserClosed = true;
 				Hide();
 			}
+		}
+
+		protected override void OnShown(EventArgs e)
+		{
+			base.OnShown(e);
+			if (!HasPreferredTop)
+			{
+				PreferredTop = Top;
+				HasPreferredTop = true;
+			}
+			UpdateAutoHeight();
+		}
+
+		protected override void OnVisibleChanged(EventArgs e)
+		{
+			base.OnVisibleChanged(e);
+			if (ResizeTimer == null)
+			{
+				return;
+			}
+			if (!Visible)
+			{
+				ResizeTimer.Stop();
+			}
+			else
+			{
+				UpdateAutoHeight();
+			}
+		}
+
+		/// <summary>
+		/// 按答案正文的实际高度调整窗口：答案多就长高，答案少就缩回，
+		/// 高度用定时器逐帧靠近目标值，形成平滑动画。
+		/// 超过屏幕可用高度时不再长高，正文内部改为滚动。
+		/// </summary>
+		private void UpdateAutoHeight()
+		{
+			if (Body == null || !Body.IsHandleCreated || Body.ClientSize.Height <= 0)
+			{
+				return;
+			}
+			int chrome = ClientSize.Height - Body.ClientSize.Height;
+			if (chrome < 0)
+			{
+				chrome = 0;
+			}
+			int content = MeasureContentHeight();
+			Rectangle area = WorkingArea();
+			int maxHeight = area.Height - AutoHeightScreenGap;
+			if (maxHeight < MinAutoHeight)
+			{
+				// 极端小的可用桌面：优先保证还能看见，不强行撑到最小高度
+				maxHeight = Math.Max(160, area.Height - 16);
+			}
+			int target = chrome + content + 12;
+			if (target < MinAutoHeight)
+			{
+				target = MinAutoHeight;
+			}
+			if (target > maxHeight)
+			{
+				target = maxHeight;
+			}
+
+			// 以用户放置/拖动的位置为锚点；长高后放不下就让整个窗口向上让位
+			int top = HasPreferredTop ? PreferredTop : Top;
+			if (top + target > area.Bottom - 8)
+			{
+				top = area.Bottom - 8 - target;
+			}
+			if (top < area.Top + 8)
+			{
+				top = area.Top + 8;
+			}
+
+			TargetHeight = target;
+			TargetTop = top;
+			if (!Visible || ResizeTimer.Enabled)
+			{
+				return;
+			}
+			if (Math.Abs(Height - TargetHeight) <= 1 && Math.Abs(Top - TargetTop) <= 1)
+			{
+				return;
+			}
+			ResizeTimer.Start();
+		}
+
+		/// <summary>正文实际需要的高度（和当前滚动位置无关）。</summary>
+		private int MeasureContentHeight()
+		{
+			if (Body.TextLength == 0)
+			{
+				return 0;
+			}
+			try
+			{
+				Point first = Body.GetPositionFromCharIndex(0);
+				Point last = Body.GetPositionFromCharIndex(Body.TextLength - 1);
+				int lineHeight = Math.Max(1, Body.Font.Height);
+				int height = last.Y - first.Y + lineHeight;
+				return Math.Max(0, height);
+			}
+			catch
+			{
+				return Body.ClientSize.Height;
+			}
+		}
+
+		private Rectangle WorkingArea()
+		{
+			try
+			{
+				return Screen.FromControl(this).WorkingArea;
+			}
+			catch
+			{
+				return Screen.PrimaryScreen.WorkingArea;
+			}
+		}
+
+		private void OnResizeTick()
+		{
+			int diffHeight = TargetHeight - Height;
+			int diffTop = TargetTop - Top;
+			if (Math.Abs(diffHeight) <= 1 && Math.Abs(diffTop) <= 1)
+			{
+				ResizeTimer.Stop();
+				SetBounds(Left, TargetTop, Width, TargetHeight);
+				return;
+			}
+			int newHeight = Height + StepTo(diffHeight);
+			int newTop = Top + StepTo(diffTop);
+			if (newHeight < 1)
+			{
+				newHeight = 1;
+			}
+			SetBounds(Left, newTop, Width, newHeight);
+		}
+
+		/// <summary>每次靠近目标约 1/4，接近时至少走 2px，避免动画尾巴太慢。</summary>
+		private static int StepTo(int diff)
+		{
+			if (diff == 0)
+			{
+				return 0;
+			}
+			int step = Math.Abs(diff) / 4;
+			if (step < 2)
+			{
+				step = 2;
+			}
+			if (step > 96)
+			{
+				step = 96;
+			}
+			return (diff < 0) ? -step : step;
+		}
+
+		protected override void Dispose(bool disposing)
+		{
+			if (disposing && ResizeTimer != null)
+			{
+				try
+				{
+					ResizeTimer.Stop();
+					ResizeTimer.Dispose();
+				}
+				catch
+				{
+				}
+			}
+			base.Dispose(disposing);
 		}
 
 		protected override void OnPaint(PaintEventArgs e)
@@ -339,13 +540,22 @@ namespace SnapAsk.Ui
 		/// <summary>新问题开始：清空正文并放进题目摘要。</summary>
 		public void BeginQuestion(Question question)
 		{
+			BeginQuestion(question, true);
+		}
+
+		/// <summary>show = false 时只更新内容、不弹窗，避免「自动弹出结果窗」关闭时闪一下。</summary>
+		public void BeginQuestion(Question question, bool show)
+		{
 			RawText = "";
 			UserClosed = false;
 			TopMost = Pinned;
 			CaptionLabel.Text = "题目：" + ((question == null) ? "" : question.Caption);
 			RenderBody("");
 			SetStatus("正在提问", Theme.Accent);
-			ShowIfHidden();
+			if (show)
+			{
+				ShowIfHidden();
+			}
 		}
 
 		private void ShowIfHidden()
@@ -375,10 +585,12 @@ namespace SnapAsk.Ui
 			}
 			if (!Visible)
 			{
+				// 已经显示时不要再反复 BringToFront：流式回答每 700ms 调一次，
+				// 反复提升窗口会打断用户当前的操作。
+				TopMost = Pinned;
 				Show();
+				BringToFront();
 			}
-			TopMost = Pinned;
-			BringToFront();
 		}
 
 		public void SetStatus(string text, Color dot)
@@ -412,39 +624,121 @@ namespace SnapAsk.Ui
 
 		private void RenderBody(string answer)
 		{
-			bool atBottom = true;
-			try
+			if (answer == null)
 			{
-				Point last = Body.GetPositionFromCharIndex(Body.TextLength);
-				atBottom = last.Y <= Body.ClientSize.Height;
+				answer = "";
 			}
-			catch
+			bool atBottom = IsAtBottom();
+			int firstVisible = 0;
+			if (!atBottom && Body.TextLength > 0)
 			{
-			}
-			Body.SuspendLayout();
-			Body.Clear();
-			Body.SelectionColor = Theme.Answer;
-			Body.SelectionFont = Theme.UiFont;
-			Body.AppendText(answer);
-			Body.ResumeLayout();
-			if (atBottom)
-			{
-				Body.SelectionStart = Body.TextLength;
-				Body.SelectionLength = 0;
-				Body.ScrollToCaret();
-			}
-			// 正文没超出可视区时回到顶部，避免短答案被滚到中间
-			try
-			{
-				if (Body.GetPositionFromCharIndex(Body.TextLength).Y <= Body.ClientSize.Height)
+				try
 				{
+					firstVisible = Body.GetCharIndexFromPosition(new Point(1, 1));
+				}
+				catch
+				{
+					firstVisible = 0;
+				}
+			}
+
+			// 流式回答绝大多数时候只是在末尾追加：只补新增的那一段，
+			// 避免每个片段都把整篇正文清空重排（长答案会明显闪烁、越来越慢）。
+			bool appendOnly = RenderedText.Length > 0
+				&& answer.Length >= RenderedText.Length
+				&& string.CompareOrdinal(answer, 0, RenderedText, 0, RenderedText.Length) == 0;
+
+			Body.SuspendLayout();
+			try
+			{
+				if (!appendOnly)
+				{
+					Body.Clear();
+					RenderedText = "";
+				}
+				if (answer.Length > RenderedText.Length)
+				{
+					Body.SelectionStart = Body.TextLength;
+					Body.SelectionLength = 0;
+					Body.SelectionColor = Theme.Answer;
+					Body.SelectionFont = Theme.UiFont;
+					Body.AppendText(answer.Substring(RenderedText.Length));
+				}
+				RenderedText = answer;
+			}
+			finally
+			{
+				Body.ResumeLayout();
+			}
+
+			try
+			{
+				bool fits = ContentFits();
+				if (atBottom)
+				{
+					Body.SelectionStart = Body.TextLength;
+					Body.SelectionLength = 0;
+					Body.ScrollToCaret();
+				}
+				if (fits)
+				{
+					// 正文没超出可视区时回到顶部，避免短答案被滚到中间
 					Body.SelectionStart = 0;
+					Body.SelectionLength = 0;
+					Body.ScrollToCaret();
+				}
+				else if (!atBottom)
+				{
+					// 用户往回翻了：保持原来的阅读位置，别把他拽回底部
+					Body.SelectionStart = Math.Min(firstVisible, Body.TextLength);
 					Body.SelectionLength = 0;
 					Body.ScrollToCaret();
 				}
 			}
 			catch
 			{
+			}
+			UpdateAutoHeight();
+		}
+
+		private bool IsAtBottom()
+		{
+			try
+			{
+				if (Body.TextLength == 0)
+				{
+					return true;
+				}
+				Point last = Body.GetPositionFromCharIndex(Body.TextLength - 1);
+				return last.Y <= Body.ClientSize.Height;
+			}
+			catch
+			{
+				return true;
+			}
+		}
+
+		/// <summary>正文总高度是否没超过可视区（和当前滚动位置无关）。</summary>
+		private bool ContentFits()
+		{
+			try
+			{
+				if (Body.TextLength == 0)
+				{
+					return true;
+				}
+				Point first = Body.GetPositionFromCharIndex(0);
+				Point last = Body.GetPositionFromCharIndex(Body.TextLength - 1);
+				if (first.Y < 0 || last.Y < 0)
+				{
+					return false;
+				}
+				int lineHeight = Math.Max(1, Body.Font.Height);
+				return (last.Y - first.Y + lineHeight) <= Body.ClientSize.Height;
+			}
+			catch
+			{
+				return false;
 			}
 		}
 
@@ -465,6 +759,7 @@ namespace SnapAsk.Ui
 		public void Finish()
 		{
 			SetStatus("已完成", Theme.Success);
+			UpdateAutoHeight();
 		}
 
 		public void ShowFailure(string message)
@@ -478,12 +773,20 @@ namespace SnapAsk.Ui
 			RawText = message;
 			RenderBody(message);
 			ShowIfHidden();
+			UpdateAutoHeight();
+		}
+
+		/// <summary>动画中的目标高度；动画还没开始时用当前高度。</summary>
+		private int LayoutHeight()
+		{
+			return (TargetHeight > 0) ? TargetHeight : Height;
 		}
 
 		/// <summary>把卡片放到框选区域右下角，越界就夹回屏幕内。</summary>
 		public void PlaceNear(Rectangle screenRect)
 		{
 			Rectangle area = Screen.FromPoint(new Point(screenRect.Left, screenRect.Top)).WorkingArea;
+			int height = LayoutHeight();
 			int x = screenRect.Right + 12;
 			int y = screenRect.Top;
 			if (x + Width > area.Right)
@@ -494,31 +797,39 @@ namespace SnapAsk.Ui
 			{
 				x = area.Left + 12;
 			}
-			if (y + Height > area.Bottom)
+			if (y + height > area.Bottom)
 			{
-				y = area.Bottom - Height - 12;
+				y = area.Bottom - height - 12;
 			}
 			if (y < area.Top)
 			{
 				y = area.Top + 12;
 			}
 			Location = new Point(x, y);
+			PreferredTop = y;
+			HasPreferredTop = true;
+			UpdateAutoHeight();
 		}
 
 		public void PlaceNearCursor()
 		{
 			Rectangle area = Screen.FromPoint(Cursor.Position).WorkingArea;
+			int height = LayoutHeight();
 			int x = Cursor.Position.X + 16;
 			int y = Cursor.Position.Y + 16;
 			if (x + Width > area.Right)
 			{
 				x = area.Right - Width - 12;
 			}
-			if (y + Height > area.Bottom)
+			if (y + height > area.Bottom)
 			{
-				y = area.Bottom - Height - 12;
+				y = area.Bottom - height - 12;
 			}
-			Location = new Point(Math.Max(area.Left + 12, x), Math.Max(area.Top + 12, y));
+			y = Math.Max(area.Top + 12, y);
+			Location = new Point(Math.Max(area.Left + 12, x), y);
+			PreferredTop = y;
+			HasPreferredTop = true;
+			UpdateAutoHeight();
 		}
 	}
 }
